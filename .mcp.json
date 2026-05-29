@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "chatgpt": {
+      "command": "python",
+      "args": ["C:/Users/kimghw/web_chatgpt/server.py"],
+      "env": {
+        "CHATGPT_CDP_PORT": "9223"
+      }
+    }
+  }
+}
