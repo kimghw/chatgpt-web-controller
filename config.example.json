@@ -1,0 +1,21 @@
+{
+  "_comment": "이 파일을 config.json 으로 복사해 값을 채운다. config.json 은 .gitignore 로 저장소에서 제외됨 (로그인 정보 평문 저장 주의).",
+  "cdp_port": 9223,
+  "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "user_data_dir": "%USERPROFILE%\\.chrome-chatgpt-debug",
+  "login": {
+    "_comment": "OpenAI 이메일/비밀번호 계정만 자동 입력 지원. 소셜 로그인(구글/네이버 등)·2FA·CAPTCHA 는 열린 창에서 직접 진행.",
+    "email": "",
+    "password": ""
+  },
+  "session": {
+    "_comment": "title_prefix 를 지정하면 컨트롤러가 만든 새 대화 제목이 '접두사 YYMMDD-HHMM 질문머리' 로 자동 변경돼 목록에서 추적관리 가능. 예: \"[AUTO] \"",
+    "title_prefix": ""
+  },
+  "server": {
+    "_comment": "http_server.py 설정. max_tabs: 병렬 처리에 쓸 최대 탭 수(기본 5, 메모리/봇탐지 고려 2~5 권장). host 는 보안상 127.0.0.1 유지.",
+    "host": "127.0.0.1",
+    "port": 8765,
+    "max_tabs": 5
+  }
+}

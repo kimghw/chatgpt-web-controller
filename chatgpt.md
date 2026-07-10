@@ -7,6 +7,7 @@
 여기엔 **ChatGPT 고유 사실(셀렉터·엔드포인트·플랜 제약)과 이번에 겪은 애로사항**만 적는다.
 
 검증 환경: Windows 11 · Python 3.12 + Playwright · Chrome 148 · 계정 `geohwa@naver.com`(김거화, Free, 대화 1,495개).
+재검증: **2026-07-10 · Chrome 150 · ChatGPT 5.6 시점** — 핵심 셀렉터/엔드포인트 전부 유효 확인 (§7).
 
 ---
 
@@ -22,7 +23,7 @@
 
 | 단계 | 무엇을 | 어떻게 |
 |---|---|---|
-| 1. 연결 | 사람이 로그인한 Chrome 에 CDP attach | 일반 Chrome 은 디버그 포트가 없어 못 붙음 → 닫고 `--remote-debugging-port=9223 --user-data-dir="<기본 User Data>" --profile-directory=Default` 로 재실행. `connect_over_cdp("http://localhost:9223")` 로 `contexts[0]` 재사용 |
+| 1. 연결 | 로그인된 디버그 Chrome 에 CDP attach | **Chrome 136+ (현재 150) 는 기본 User Data 에선 `--remote-debugging-port` 를 무시한다** → 기본 프로필 재실행 방식은 더 이상 불가. **전용 디버그 프로필**로 실행: `python launch_chrome.py` (설정은 [config.json](config.example.json)) 또는 수동으로 `chrome.exe --remote-debugging-port=9223 --user-data-dir="%USERPROFILE%\.chrome-chatgpt-debug"`. 그 창에서 ChatGPT 에 **1회 로그인**(프로필이 유지되므로 이후 재로그인 불요). `connect_over_cdp("http://localhost:9223")` 로 `contexts[0]` 재사용 |
 | 2. 프로필 식별 | 어느 프로필이 로그인됐나 | 한 User Data 에 `Default`/`Profile 1` 공존. `Local State` 의 `profile.info_cache`·`last_used`, 각 프로필 `Network/Cookies` 의 `host_key` 로 식별 |
 | 3. 로그인 확인 | 진짜 로그인 상태인가 | `/api/auth/session` 에 `accessToken` 있으면 로그인. (쿠키 존재나 UI 만으로 판정 금지 — §3 함정 ③) |
 | 4-a. 리스트 회수 | 전체 대화 | `GET /backend-api/conversations?offset=N&limit=100&order=updated` (Bearer) 페이지네이션 → 1,495개 전부 |
@@ -44,22 +45,25 @@
 | 내 정보 | `GET /backend-api/me` | **쿠키만이면 익명**: `{"id":"ua-...","email":""}`. Bearer 필요 |
 | 대화 목록 | `GET /backend-api/conversations?offset&limit&order=updated` | Bearer. `items[]`: `id,title,create_time,update_time(ISO8601),is_archived` |
 | 대화 상세 | `GET /backend-api/conversation/<id>` | Bearer. `mapping`(노드 그래프) + `current_node` + `title`,`default_model_slug` |
+| 제목 변경 | `PATCH /backend-api/conversation/<id>` | Bearer + JSON body `{"title": "..."}`. 세션 제목 추적관리용 (UI rename 과 동일 경로) |
 
 호출 시 헤더: `Authorization: Bearer <accessToken>` (+ `credentials:'include'`). 페이지 컨텍스트 안에서 `fetch` 로 호출.
 
-### 2.2 UI 셀렉터 (쓰기 동작용)
+### 2.2 UI 셀렉터 (쓰기 동작용) — 2026-07-10 전항목 재확인 (§7)
 | 대상 | 셀렉터 | 비고 |
 |---|---|---|
-| 새 채팅 | `[data-testid="create-new-chat-button"]` | |
-| 모델 스위처 | `[data-testid="model-switcher-dropdown-button"]` | 열면 `[role="menuitemradio"]` 가 선택가능 모델 |
-| 입력창 | `#prompt-textarea` | **ProseMirror contenteditable** (textarea 아님). `fill` 말고 click→type |
-| 전송 | `[data-testid="send-button"]` | **입력 후에야 생성됨** → 없으면 `Enter` 폴백 |
-| assistant 메시지 | `[data-message-author-role="assistant"]` | 마지막 노드의 `innerText` |
-| 생성중 표시 | `[data-testid="stop-button"]` / `aria-label*="중지"` | 사라지면 응답 완료 |
+| 새 채팅 | `[data-testid="create-new-chat-button"]` | 2026-07 현재 `<a>` 태그 (click 동작 동일) |
+| 모델/effort 피커 | `[data-testid="model-switcher-dropdown-button"]` → 없으면 `button[class*="__composer-pill"][aria-haspopup="menu"]` | 2026-07 live: 이 계정은 testid 없이 **pill 버튼**(현재 티어 라벨 표시)만 존재. 열면 `[role="menuitemradio"]` = effort 티어 (Instant 5.5/Medium/High/Extra High/Pro), 서브메뉴 `GPT-5.6 Sol`. `chatgpt_client.list_models()/select_model()` 사용 |
+| 입력창 | `#prompt-textarea` | **ProseMirror contenteditable** (textarea 아님). `fill` 말고 click→type. aria `Chat with ChatGPT` |
+| 전송 | `[data-testid="send-button"]` | **입력 후에야 생성됨**. aria `Send prompt`. 2026-05 리디자인 후 A/B 에 따라 `#composer-submit-button` 만 있는 계정도 있음 → 체인: `send-button` → `#composer-submit-button` → aria → `Enter` |
+| assistant 메시지 | `[data-message-author-role="assistant"]` | 마지막 노드의 `innerText`. 없으면 `section[data-turn="assistant"]` 폴백 (2026-05 턴 컨테이너 변경). **긴 대화는 가상화** — 스크롤 밖 턴이 DOM 에서 언로드되어 개수가 부정확할 수 있음 |
+| 생성중 표시 | `[data-testid="stop-button"]` | aria 라벨은 자주 바뀜("Stop streaming"→"Stop answering") → 정확 매칭 금지, `aria-label*="stop" i` 부분 매칭. 사라지면 응답 완료 |
+| 완료 확정 신호 | `[data-testid="copy-turn-action-button"]` | 턴이 완전히 끝나야 나타남 (2026-07-10 live 확인, aria `Copy response`) |
 
-### 2.3 플랜/모델 제약
-- **Free 플랜**: 선택 가능 모델은 **"ChatGPT (일상적인 작업에 적합)"** 하나 + "ChatGPT Plus 업그레이드" CTA(이건 `menuitem`, 선택 모델 아님). `default_model_slug` 는 `auto`.
-- 모델 목록은 **추측 금지** — 드롭다운 열어 `menuitemradio` 를 live 확인 (플랜에 따라 달라짐).
+### 2.3 플랜/모델 제약 (2026-07, GPT-5.6 시점)
+- **Free 플랜**: 선택 가능 모델은 **"ChatGPT (일상적인 작업에 적합)"** 하나 + "ChatGPT Plus 업그레이드" CTA(이건 `menuitem`, 선택 모델 아님). `default_model_slug` 는 `auto`. GPT-5.6 은 Free 미제공.
+- **피커가 모델명 → effort 티어로 개편** (2026-06): Instant(GPT-5.5) / Medium·High·Extra High(GPT-5.6 Sol) / Pro. 기본값은 GPT-5.5 Instant + 유료 플랜은 자동 에스컬레이션(Instant→Medium) — **한 대화 안에서 턴마다 모델이 바뀔 수 있고** `data-message-model-slug` 도 턴별로 다를 수 있다.
+- 모델 목록은 **추측 금지** — 드롭다운 열어 `menuitemradio` 를 live 확인 (플랜에 따라 달라짐). 익명(비로그인) 세션은 드롭다운 메뉴가 아예 비어 있음(2026-07-10 확인).
 
 ### 2.4 응답 완료 판정 (스트리밍)
 - 마지막 assistant 텍스트가 **안정(2~3회 연속 동일) AND** 생성중 버튼이 사라짐 → 완료.
@@ -68,6 +72,11 @@
 ### 2.5 회수 데이터 특이점
 - DOM 텍스트는 폴링 타이밍상 **부분(미완)** 일 수 있음 (예: DOM 578자 vs API 982자). **API(`mapping`) 가 완전본**.
 - API `content.parts` 에는 UI 렌더 전 **내부 토큰이 그대로** 들어온다: `entity["org","Korean Register",...]`, `cite…turn0search…`, `url…`. 깔끔히 쓰려면 후처리 제거 필요.
+- (2026-05~) Canvas 폐지 → 글/코드 출력이 assistant 턴 안의 **inline writing/code block** 컨테이너로 렌더됨. DOM `innerText` 로는 섞여 나올 수 있으니 역시 API 회수가 안전.
+
+### 2.6 쓰기(전송) 경로 주의 (2026)
+- **`POST /backend-api/conversation` 직접 호출은 사실상 봉쇄** — Sentinel 파이프라인(PoW proof-token, turnstile 등 최대 5종 헤더) 필요. **전송은 지금처럼 DOM 컴포저로만** 한다. GET 조회는 Sentinel 불요.
+- **10,000자 초과 입력을 붙여넣기(paste)하면 자동으로 파일 첨부로 변환**됨(2026-06~). 본 프로젝트는 `keyboard.type` 이라 해당 없음 — 장문 주입을 클립보드 방식으로 바꾸지 말 것.
 
 ---
 
@@ -99,8 +108,10 @@
 
 | 스크립트 | 하는 일 | 사용 / 산출물 |
 |---|---|---|
+| [launch_chrome.py](launch_chrome.py) | 디버그 Chrome 기동(+선택 자동 로그인) | `python launch_chrome.py` → `{launched, logged_in, email}`. 설정: `config.json` |
+| [http_server.py](http_server.py) | localhost HTTP 서버 (탭 풀 병렬, §6) | `python http_server.py` → `http://127.0.0.1:8765/docs` |
 | [fetch_chats.py](fetch_chats.py) | 전체 대화 리스트 회수 | `python fetch_chats.py` → `chats.json` (+ 별도 정리: `chats_list.md`) |
-| [ask_chatgpt.py](ask_chatgpt.py) | 새 채팅: 모델선택→질문→답변 회수 | `python ask_chatgpt.py "질문"` → `answer.md`/`answer.json` |
+| [ask_chatgpt.py](ask_chatgpt.py) | 새 채팅: 질문→답변 회수(+세션 제목) | `python ask_chatgpt.py "질문" ["세션 제목"]` → `answer.md`/`answer.json` |
 | [ask_in_existing.py](ask_in_existing.py) | 기존 대화 이어쓰기(맥락 유지) | `python ask_in_existing.py <conversation_id> "질문"` → `existing_answer.md`/`.json` |
 | [fetch_result.py](fetch_result.py) | 열린/특정 대화 결과만 회수 | `python fetch_result.py [conversation_id]` → `result_conversation.md`/`.json` |
 
@@ -129,6 +140,8 @@
 - [chatgpt_client.py](chatgpt_client.py) — 코어 로직 (CLI 스크립트와 공유)
 - [server.py](server.py) — FastMCP stdio 서버
 - [.mcp.json](.mcp.json) — 프로젝트 단위 등록(Claude Code 가 자동 감지, 승인 시 활성)
+- [launch_chrome.py](launch_chrome.py) — 디버그 Chrome 기동(+선택 자동 로그인)
+- `config.json` — 로컬 설정: 포트·Chrome 경로·로그인 정보·세션 제목 접두사 (git 제외, 템플릿 [config.example.json](config.example.json))
 
 **도구**
 | 도구 | 인자 | 하는 일 |
@@ -136,16 +149,75 @@
 | `chatgpt_session_status` | — | 로그인/세션 상태 (`logged_in`,`email`,`expires`) |
 | `chatgpt_list_conversations` | `limit=50`, `include_archived=false` | 대화 목록(최신순). `limit=0` 이면 전체 |
 | `chatgpt_get_conversation` | `conversation_id=""` | 대화 전체 메시지(빈 값=활성 탭). 내부 마커 정리됨 |
-| `chatgpt_ask` | `prompt`, `wait_timeout=150` | 새 채팅 질의→답변 회수 (계정에 대화 생성) |
+| `chatgpt_ask` | `prompt`, `wait_timeout=150`, `title=""` | 새 채팅 질의→답변 회수 (계정에 대화 생성). `title` 지정 시(또는 config `session.title_prefix`) 대화 제목을 바꿔 추적관리 |
 | `chatgpt_ask_in_conversation` | `conversation_id`, `prompt`, `wait_timeout=150` | 기존 대화 이어쓰기 질의→답변 (맥락 유지) |
+| `chatgpt_rename_conversation` | `conversation_id`, `title` | 대화(세션) 제목 변경 — 추적관리용 |
+| `chatgpt_list_models` | — | 모델/effort 피커 옵션 live 조회 (`{current, options[]}`) |
+| `chatgpt_select_model` | `label` | 피커에서 모델/effort 선택 (부분일치). 새 채팅에 적용 |
 
-**전제**: ChatGPT 에 로그인된 Chrome 이 `--remote-debugging-port=9223` 으로 떠 있어야 함(없으면 §1 단계 1).
-포트는 env `CHATGPT_CDP_PORT` 로 변경.
+**스킬**: [/gpt-chrome](.claude/skills/gpt-chrome/SKILL.md) — 바탕화면 전용 바로가기 생성 + Chrome 기동 + 자동 로그인.
+[/gpt-ask](.claude/skills/gpt-ask/SKILL.md) — 질문 전 AskUserQuestion 으로 모델/effort 선택받고 전송.
+
+**전제**: ChatGPT 에 로그인된 Chrome 이 `--remote-debugging-port=9223` 으로 떠 있어야 함(없으면 `python launch_chrome.py`, §1 단계 1).
+포트/Chrome 경로/로그인 정보는 `config.json` (템플릿: [config.example.json](config.example.json), git 제외). 포트 우선순위: env `CHATGPT_CDP_PORT` > `config.json` > 9223.
 
 **등록**
 - 프로젝트 자동 감지: 이 폴더에서 Claude Code 를 열면 `.mcp.json` 의 `chatgpt` 서버를 승인 후 사용.
-- 또는 전역 등록: `claude mcp add chatgpt -- python "C:/Users/kimghw/web_chatgpt/server.py"`
+- 또는 전역 등록: `claude mcp add chatgpt -- python "C:/Users/sscb/chatgpt-web-controller/server.py"`
 
 **의존성**: `pip install "mcp[cli]" playwright` (Playwright 브라우저는 CDP attach 라 별도 설치 불요).
 
 **직접 실행/디버그**: `python server.py` (stdio 대기). 동작 확인은 MCP 클라이언트로 `tools/list`·`call_tool`.
+
+### HTTP 서버 (탭 풀 병렬)
+
+[http_server.py](http_server.py) — localhost FastAPI. 로그인된 디버그 Chrome 에 상주 연결(async Playwright)하고,
+**새 채팅은 탭 풀에서 병렬 처리**한다. 탭 수는 `config.json` `server.max_tabs` (기본 **5**, 2~5 권장).
+서버 시작 시 포트가 죽어 있으면 자동 기동+로그인(launch_chrome).
+
+실행: `python http_server.py` → `http://127.0.0.1:8765` (Swagger: `/docs`)
+
+| 엔드포인트 | 하는 일 |
+|---|---|
+| `GET /status` | 세션 + 탭 풀 상태 |
+| `POST /ask` `{prompt, title?, model?, wait_timeout?}` | 새 채팅 질문 — **병렬**. `model` 지정 시 그 탭 피커에서 선택("Instant"/"High"/"Pro"…) |
+| `POST /ask_in` `{conversation_id, prompt}` | 기존 대화 이어쓰기 — 같은 대화는 락으로 직렬 |
+| `GET /conversations` / `GET /conversation/{cid}` | 목록 / 상세 (내부 API) |
+| `GET /models` / `POST /select_model` | 피커 옵션 조회 / 선택 |
+| `POST /rename` `{conversation_id, title}` | 세션 제목 변경 |
+
+주의: 계정 전체(열람+대필) 권한이므로 **host 는 127.0.0.1 밖으로 열지 말 것**. 같은 대화 동시 전송 금지(자동 직렬화됨).
+검증(2026-07-10): 병렬 `/ask` 2건 동시 실행 — 각 32.6s/26.0s, 총 32.6s (동시성 확인), 제목·모델선택 정상.
+
+---
+
+## 7. 2026-07-10 재검증 (ChatGPT 5.6 시점)
+
+환경: Windows 11 · Chrome 150 · 임시 프로필(익명) CDP attach + 웹 리서치 교차 검증.
+
+**live 확인 (이 PC, 익명 세션 왕복 테스트 성공)**
+- ✅ `#prompt-textarea` (ProseMirror DIV, aria `Chat with ChatGPT`, placeholder "Ask anything")
+- ✅ `[data-testid="send-button"]` (입력 후 생성, aria `Send prompt`) → 전송 클릭 동작
+- ✅ `[data-testid="stop-button"]` (생성 중 표시) / 완료 후 `copy-turn-action-button` 출현
+- ✅ `[data-message-author-role="assistant"|"user"]` — 마커 질문에 정확 응답 회수
+- ✅ `[data-testid="create-new-chat-button"]` (현재 `<a>` 태그) · `model-switcher-dropdown-button` (aria `Model selector`)
+- ✅ `/api/auth/session` `/backend-api/conversations` `/backend-api/me` — 경로·응답 구조 불변 (익명이면 `ua-` id, 문서 §3-③ 그대로)
+- 📌 익명 세션은 전송 후에도 URL 이 `/c/<id>` 로 안 바뀜 → `/c/<id>` 진실신호는 로그인 세션 전용
+
+**리서치 확인 (2026 상반기 변경, 코드에 반영됨)**
+- 2026-05 리디자인: 일부 A/B 버킷에서 `send-button` testid 제거 → `#composer-submit-button`. 전송은 폴백 체인으로 대응
+- stop 버튼 aria 라벨 2회 변경("Stop generating"→"Stop streaming"→"Stop answering") → `aria-label*="stop" i` 부분 매칭으로 대응
+- 턴 컨테이너 `article` → `section[data-turn=...]`, 긴 대화 DOM 가상화 → assistant 폴백 셀렉터 + baseline 텍스트 비교로 대응
+- Chrome 136+ 기본 프로필 CDP 봉쇄 → §1 단계 1 을 전용 디버그 프로필 방식으로 교체
+- 모델 피커 effort 티어 개편 / GPT-5.6(Sol) 제공 플랜 → §2.3 갱신
+- raw HTTP POST 봉쇄(Sentinel), 10k+ 붙여넣기 첨부 변환 → §2.6 신설
+
+**로그인 세션 추가 검증 (2026-07-10, geohwa@naver.com 전용 프로필)**
+- ✅ 자동 로그인(launch_chrome.py, 이메일/비밀번호 자동 입력) → `logged_in: true`
+- ✅ 대화 목록 39개 회수, 로그인 `ask()` 왕복 + `/c/<id>` URL 전환 정상
+- ✅ `PATCH /backend-api/conversation/<id>` 제목 변경 → 목록 반영까지 확인 (세션 제목 추적관리 실동작)
+- ✅ `default_model_slug` = **`gpt-5-6-pro`** (이 계정 기본값 — 5.6 시대 슬러그는 `gpt-5-6-*` 형태)
+- ✅ 모델/effort 피커: 이 계정 버킷은 `model-switcher-dropdown-button` testid **없음** →
+  `button[class*="__composer-pill"][aria-haspopup="menu"]` (pill, 현재 티어 라벨 표시)가 트리거.
+  메뉴 `menuitemradio` = **Instant 5.5 / Medium / High / Extra High / Pro** (+ 서브메뉴 `GPT-5.6 Sol`,
+  dialog testid `composer-intelligence-picker-content`). `select_model("High")`→pill "High" 전환→"Pro" 원복 검증 완료.

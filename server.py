@@ -7,7 +7,7 @@
       (포트는 환경변수 CHATGPT_CDP_PORT 로 변경 가능)
 
 실행: python server.py        (stdio MCP 서버)
-등록: claude mcp add chatgpt -- python "C:/Users/kimghw/web_chatgpt/server.py"
+등록: claude mcp add chatgpt -- python "C:/Users/sscb/chatgpt-web-controller/server.py"
 """
 from __future__ import annotations
 
@@ -64,16 +64,52 @@ async def chatgpt_get_conversation(conversation_id: str = "") -> dict:
 
 
 @mcp.tool()
-async def chatgpt_ask(prompt: str, wait_timeout: float = 150.0) -> dict:
+async def chatgpt_ask(prompt: str, wait_timeout: float = 150.0, title: str = "") -> dict:
     """새 채팅을 열어 질문을 보내고 답변을 회수한다 (모델은 계정 기본값).
 
     Args:
         prompt: 보낼 질문/지시.
         wait_timeout: 응답 완료 대기 최대 초.
-    Returns: {ok, conversation_id, prompt, answer, title, model, total_messages}
+        title: 생성된 대화에 붙일 세션 제목(추적관리용). 빈 값이면 config 의
+               session.title_prefix 규칙(있을 때) 또는 ChatGPT 자동 제목.
+    Returns: {ok, conversation_id, prompt, answer, title, model, total_messages, renamed?}
     주의: 계정에 새 대화가 생성된다(쓰기 동작).
     """
-    return await asyncio.to_thread(cc.ask, prompt, wait_timeout, True)
+    return await asyncio.to_thread(cc.ask, prompt, wait_timeout, True, (title or None))
+
+
+@mcp.tool()
+async def chatgpt_list_models() -> dict:
+    """모델/effort 피커의 선택 가능 옵션을 live 조회한다 (추측 금지 원칙).
+
+    Returns: {ok, current, options:[{label, checked}]}
+    2026-07 기준 피커는 effort 티어 목록 (예: Instant(5.5)/Medium/High/Extra High/Pro).
+    질문 전 사용자에게 모델/effort 선택을 받을 때 이 결과로 선택지를 구성한다.
+    """
+    return await asyncio.to_thread(cc.list_models)
+
+
+@mcp.tool()
+async def chatgpt_select_model(label: str) -> dict:
+    """모델/effort 피커에서 항목을 선택한다 (부분일치, 대소문자 무시).
+
+    Args:
+        label: chatgpt_list_models 의 options[].label (예: "High", "Pro", "Instant").
+    Returns: {ok, selected, already_selected, current_pill}
+    """
+    return await asyncio.to_thread(cc.select_model, label)
+
+
+@mcp.tool()
+async def chatgpt_rename_conversation(conversation_id: str, title: str) -> dict:
+    """대화(세션) 제목을 변경한다 — 컨트롤러가 만든 대화에 제목을 붙여 추적관리.
+
+    Args:
+        conversation_id: 대상 대화 id (chatgpt_list_conversations 의 items[].id).
+        title: 새 제목.
+    Returns: {ok, title, conversation_id}
+    """
+    return await asyncio.to_thread(cc.rename_conversation, conversation_id, title)
 
 
 @mcp.tool()

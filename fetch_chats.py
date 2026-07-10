@@ -27,8 +27,7 @@ def _ipv4(host, port, *a, **k):
 
 socket.getaddrinfo = _ipv4  # type: ignore[assignment]
 
-PORT = 9223
-CDP = f"http://localhost:{PORT}"
+from chatgpt_client import CDP  # 포트: env CHATGPT_CDP_PORT > config.json > 9223
 
 JS_FETCH_ALL = r"""
 async () => {

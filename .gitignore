@@ -8,3 +8,4 @@ venv/
 # Env / secrets
 .env
 *.local
+config.json

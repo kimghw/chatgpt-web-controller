@@ -15,6 +15,7 @@ def _f(h, p, *a, **k):
     return _o(h, p, *a, **k)
 socket.getaddrinfo = _f
 from playwright.sync_api import sync_playwright
+from chatgpt_client import CDP  # 포트: env CHATGPT_CDP_PORT > config.json > 9223
 
 KST = timezone(timedelta(hours=9))
 CID = sys.argv[1] if len(sys.argv) > 1 else None
@@ -25,7 +26,7 @@ if not CID:
 COUNT_ASST = r"""() => document.querySelectorAll('[data-message-author-role="assistant"]').length"""
 LAST_ASST = r"""() => { const n=document.querySelectorAll('[data-message-author-role="assistant"]');
   return n.length ? (n[n.length-1].innerText||'').trim() : ''; }"""
-IS_GEN = r"""() => !!document.querySelector('[data-testid="stop-button"], [aria-label*="중지"], [aria-label*="Stop streaming"]')"""
+IS_GEN = r"""() => !!document.querySelector('[data-testid="stop-button"], [data-testid="composer-stop-button"], button[aria-label*="stop" i], [aria-label*="중지"]')"""
 GET_CONV = r"""
 async (cid) => {
   const sR=await fetch('/api/auth/session',{credentials:'include',headers:{'accept':'application/json'}});
@@ -47,7 +48,7 @@ def fmt(ts):
     except Exception: return "?"
 
 with sync_playwright() as p:
-    b = p.chromium.connect_over_cdp("http://localhost:9223")
+    b = p.chromium.connect_over_cdp(CDP)
     page = next((pg for pg in b.contexts[0].pages if "chatgpt.com" in pg.url), None) or b.contexts[0].new_page()
     page.bring_to_front()
     log(f"기존 대화 이동: {CID}")
@@ -59,6 +60,7 @@ with sync_playwright() as p:
         if page.evaluate(COUNT_ASST) > 0: break
         time.sleep(0.5)
     before = page.evaluate(COUNT_ASST)
+    baseline = page.evaluate(LAST_ASST) or ""   # 긴 대화 DOM 가상화 대비: 개수 대신 텍스트 변화로도 판정
     log(f"기존 assistant 메시지 수: {before}")
 
     log(f"후속 질문 입력: {PROMPT[:30]}")
@@ -66,10 +68,11 @@ with sync_playwright() as p:
     page.keyboard.type(PROMPT, delay=20)
     time.sleep(0.3)
     sent = False
-    try:
-        btn = page.query_selector('[data-testid="send-button"]')
-        if btn and btn.is_enabled(): btn.click(); sent = True
-    except Exception: pass
+    for sel in ('[data-testid="send-button"]', '#composer-submit-button', '[data-testid="composer-submit-button"]', 'button[aria-label="Send prompt"]'):
+        try:
+            btn = page.query_selector(sel)
+            if btn and btn.is_enabled(): btn.click(); sent = True; break
+        except Exception: pass
     if not sent: page.keyboard.press("Enter")
 
     log("새 답변 대기(폴링)")
@@ -79,8 +82,8 @@ with sync_playwright() as p:
             cnt = page.evaluate(COUNT_ASST); cur = page.evaluate(LAST_ASST) or ""; gen = page.evaluate(IS_GEN)
         except Exception:
             cnt, cur, gen = before, text, True
-        # 새 답변이 생겼고(개수 증가) 텍스트 안정 + 생성중 아님
-        if cnt > before and cur and cur == text and not gen:
+        # 새 답변이 생겼고(개수 증가 또는 마지막 텍스트가 전송 전과 달라짐) 텍스트 안정 + 생성중 아님
+        if (cnt > before or cur != baseline) and cur and cur == text and not gen:
             stable += 1
             if stable >= 3: break
         else:

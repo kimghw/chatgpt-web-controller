@@ -16,6 +16,7 @@ def _f(h, p, *a, **k):
     return _o(h, p, *a, **k)
 socket.getaddrinfo = _f
 from playwright.sync_api import sync_playwright
+from chatgpt_client import CDP  # 포트: env CHATGPT_CDP_PORT > config.json > 9223
 
 KST = timezone(timedelta(hours=9))
 
@@ -57,7 +58,7 @@ def fmt(ts):
 
 cid_arg = sys.argv[1] if len(sys.argv) > 1 else None
 with sync_playwright() as p:
-    b = p.chromium.connect_over_cdp("http://localhost:9223")
+    b = p.chromium.connect_over_cdp(CDP)
     page = next((pg for pg in b.contexts[0].pages if "chatgpt.com" in pg.url), None)
     if page is None:
         print(json.dumps({"ok": False, "why": "no chatgpt tab"})); b.close(); sys.exit(1)

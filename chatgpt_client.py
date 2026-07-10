@@ -1,7 +1,8 @@
 """ChatGPT 자동화 코어 (CDP attach, 동기 Playwright).
 
 server.py(MCP) 와 CLI 스크립트가 공유. playwrite.md / chatgpt.md 의 검증된 기법:
-  - 사람이 로그인한 Chrome 에 CDP attach (port=CHATGPT_CDP_PORT, 기본 9223), contexts[0] 재사용
+  - 로그인된 디버그 Chrome 에 CDP attach (포트: env CHATGPT_CDP_PORT > config.json > 9223), contexts[0] 재사용
+    (Chrome 136+ 는 기본 프로필 디버깅 불가 → launch_chrome.py 로 전용 프로필 기동)
   - 인증은 /api/auth/session 의 accessToken 을 Bearer 로 (쿠키만으론 익명 ua-)
   - 리스트/대화는 내부 API, UI 동작만 data-testid/#prompt-textarea
   - browser.close() 만 호출 → 사람 Chrome/세션 보존
@@ -9,10 +10,12 @@ server.py(MCP) 와 CLI 스크립트가 공유. playwrite.md / chatgpt.md 의 검
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
 import time
+from pathlib import Path
 from typing import Optional
 
 # --- localhost → IPv4 only (Windows CDP EADDRINUSE/IPv6 회피) ---
@@ -31,7 +34,21 @@ def _ipv4_only(host, port, *a, **k):
 
 socket.getaddrinfo = _ipv4_only  # type: ignore[assignment]
 
-PORT = int(os.environ.get("CHATGPT_CDP_PORT", "9223"))
+# ---------------- 로컬 설정 (config.json — git 제외, 로그인 정보/포트/Chrome 경로) ----------------
+_CONFIG_PATH = Path(__file__).with_name("config.json")
+
+
+def load_config() -> dict:
+    """config.json 로드 (없거나 깨졌으면 빈 dict). 템플릿은 config.example.json 참고."""
+    try:
+        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_CFG = load_config()
+# 우선순위: 환경변수 CHATGPT_CDP_PORT > config.json cdp_port > 9223
+PORT = int(os.environ.get("CHATGPT_CDP_PORT") or _CFG.get("cdp_port") or 9223)
 CDP = f"http://localhost:{PORT}"
 
 # ---------------- 본문 토큰 정리 (ChatGPT 내부 마크업 제거) ----------------
@@ -77,6 +94,20 @@ JS_LIST = r"""async (maxItems) => {
   return { ok:true, email:s.user&&s.user.email, total, count:items.length, items: maxItems ? items.slice(0,maxItems) : items };
 }"""
 
+JS_RENAME = r"""async (args) => {
+  const cid = args[0], title = args[1];
+  const sR = await fetch('/api/auth/session', {credentials:'include', headers:{'accept':'application/json'}});
+  const s = await sR.json().catch(()=>({}));
+  if (!s || !s.accessToken) return { ok:false, reason:'NOT_LOGGED_IN' };
+  const r = await fetch(`/backend-api/conversation/${cid}`, {
+    method:'PATCH', credentials:'include',
+    headers:{'authorization':'Bearer '+s.accessToken, 'content-type':'application/json', 'accept':'application/json'},
+    body: JSON.stringify({ title })
+  });
+  if (!r.ok) return { ok:false, reason:'HTTP '+r.status };
+  return { ok:true, title };
+}"""
+
 JS_GET_CONV = r"""async (cid) => {
   const sR = await fetch('/api/auth/session', {credentials:'include', headers:{'accept':'application/json'}});
   const s = await sR.json().catch(()=>({}));
@@ -95,9 +126,24 @@ JS_GET_CONV = r"""async (cid) => {
   return { ok:true, title:j.title, model:j.default_model_slug, create_time:j.create_time, msgs };
 }"""
 
-JS_LAST_ASST = r"""() => { const n=document.querySelectorAll('[data-message-author-role="assistant"]'); return n.length ? (n[n.length-1].innerText||'').trim() : ''; }"""
-JS_COUNT_ASST = r"""() => document.querySelectorAll('[data-message-author-role="assistant"]').length"""
-JS_IS_GEN = r"""() => !!document.querySelector('[data-testid="stop-button"], [aria-label*="중지"], [aria-label*="Stop streaming"]')"""
+# 전송 버튼 후보 (우선순위순). 2026-07-10 live: send-button(aria "Send prompt") 확인.
+# 2026-05 리디자인 후 A/B 버킷에 따라 #composer-submit-button 만 있는 계정도 있음 → 체인 + Enter 폴백.
+SEND_SELECTORS = (
+    '[data-testid="send-button"]',
+    '#composer-submit-button',
+    '[data-testid="composer-submit-button"]',
+    '[data-testid="composer-send-button"]',
+    'button[aria-label="Send prompt"]',
+    'button[aria-label="프롬프트 보내기"]',
+)
+
+# assistant 노드: data-message-author-role 이 1차(2026-07 live 확인).
+# 2026-05 이후 턴 컨테이너가 section[data-turn="assistant"] 로 바뀌어 폴백으로만 사용
+# (콤마로 합치면 부모+자식이 중복 카운트되므로 금지).
+JS_LAST_ASST = r"""() => { let n=document.querySelectorAll('[data-message-author-role="assistant"]'); if(!n.length) n=document.querySelectorAll('section[data-turn="assistant"]'); return n.length ? (n[n.length-1].innerText||'').trim() : ''; }"""
+JS_COUNT_ASST = r"""() => { let n=document.querySelectorAll('[data-message-author-role="assistant"]'); if(!n.length) n=document.querySelectorAll('section[data-turn="assistant"]'); return n.length; }"""
+# 생성중: aria 라벨 문구가 자주 바뀌므로("Stop streaming"→"Stop answering") 부분·대소문자 무시 매칭
+JS_IS_GEN = r"""() => !!document.querySelector('[data-testid="stop-button"], [data-testid="composer-stop-button"], button[aria-label*="stop" i], [aria-label*="중지"]')"""
 
 
 # ---------------- 연결 헬퍼 ----------------
@@ -123,19 +169,25 @@ def _close(p, browser):
         p.stop()
 
 
-def _send_and_wait(page, prompt: str, wait_timeout: float, before_count: int):
-    """컴포저에 입력·전송 후 새 응답 완료까지 폴링. (dom_text, after_count, url) 반환."""
+def _send_and_wait(page, prompt: str, wait_timeout: float, before_count: int, baseline_text: str = ""):
+    """컴포저에 입력·전송 후 새 응답 완료까지 폴링. (dom_text, after_count, url) 반환.
+
+    새 답변 판정: assistant 수 증가 OR 마지막 assistant 텍스트가 전송 전(baseline)과 달라짐.
+    (긴 대화는 DOM 가상화로 스크롤 밖 턴이 언로드돼 개수만으론 놓칠 수 있음 — 2026-07 확인)
+    """
     page.wait_for_selector("#prompt-textarea", timeout=15000)
     page.click("#prompt-textarea")
     page.keyboard.type(prompt, delay=15)
     time.sleep(0.3)
     sent = False
-    try:
-        btn = page.query_selector('[data-testid="send-button"]')
-        if btn and btn.is_enabled():
-            btn.click(); sent = True
-    except Exception:
-        pass
+    for sel in SEND_SELECTORS:
+        try:
+            btn = page.query_selector(sel)
+            if btn and btn.is_enabled():
+                btn.click(); sent = True
+                break
+        except Exception:
+            pass
     if not sent:
         page.keyboard.press("Enter")
 
@@ -145,7 +197,8 @@ def _send_and_wait(page, prompt: str, wait_timeout: float, before_count: int):
             cnt = page.evaluate(JS_COUNT_ASST); cur = page.evaluate(JS_LAST_ASST) or ""; gen = page.evaluate(JS_IS_GEN)
         except Exception:
             cnt, cur, gen = before_count, text, True
-        if cnt > before_count and cur and cur == text and not gen:
+        is_new = cnt > before_count or (cur and cur != baseline_text)
+        if is_new and cur and cur == text and not gen:
             stable += 1
             if stable >= 3:
                 break
@@ -200,8 +253,20 @@ def get_conversation(conversation_id: Optional[str] = None, clean: bool = True) 
         _close(p, browser)
 
 
-def ask(prompt: str, wait_timeout: float = 150.0, clean: bool = True) -> dict:
-    """새 채팅에서 질문 → 답변 회수. {ok, conversation_id, answer, model}."""
+def _auto_title(prompt: str) -> Optional[str]:
+    """config session.title_prefix 가 있으면 '접두사 YYMMDD-HHMM 질문머리' 자동 제목 생성."""
+    prefix = (_CFG.get("session") or {}).get("title_prefix") or ""
+    if not prefix:
+        return None
+    return f"{prefix}{time.strftime('%y%m%d-%H%M')} {prompt[:30]}".strip()
+
+
+def ask(prompt: str, wait_timeout: float = 150.0, clean: bool = True, title: Optional[str] = None) -> dict:
+    """새 채팅에서 질문 → 답변 회수. {ok, conversation_id, answer, model}.
+
+    title 을 주면(또는 config session.title_prefix 가 있으면) 생성된 대화의 제목을
+    바꿔 목록에서 추적관리할 수 있게 한다.
+    """
     p, browser, page = _with_page(navigate=None)
     try:
         page.bring_to_front()
@@ -210,11 +275,108 @@ def ask(prompt: str, wait_timeout: float = 150.0, clean: bool = True) -> dict:
         except Exception:
             page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=45000)
         before = 0
-        dom_text, after, url = _send_and_wait(page, prompt, wait_timeout, before)
+        dom_text, after, url = _send_and_wait(page, prompt, wait_timeout, before, baseline_text="")
         m = re.search(r"/c/([0-9a-f-]+)", url)
         cid = m.group(1) if m else None
         conv = page.evaluate(JS_GET_CONV, cid) if cid else {"ok": False}
-        return _answer_result(prompt, cid, conv, dom_text, clean)
+        res = _answer_result(prompt, cid, conv, dom_text, clean)
+        final_title = title or _auto_title(prompt)
+        if cid and final_title:
+            rn = page.evaluate(JS_RENAME, [cid, final_title])
+            res["renamed"] = bool(rn.get("ok"))
+            if rn.get("ok"):
+                res["title"] = final_title
+        return res
+    finally:
+        _close(p, browser)
+
+
+def rename_conversation(conversation_id: str, title: str) -> dict:
+    """대화 제목 변경 (추적관리용). {ok, title, conversation_id}."""
+    p, browser, page = _with_page()
+    try:
+        res = page.evaluate(JS_RENAME, [conversation_id, title])
+        res["conversation_id"] = conversation_id
+        return res
+    finally:
+        _close(p, browser)
+
+
+# 모델/effort 피커 트리거 (우선순위순). 2026-07-10 live: 이 계정은 testid 없이 pill 버튼만 존재
+PICKER_TRIGGERS = (
+    '[data-testid="model-switcher-dropdown-button"]',
+    'button[class*="__composer-pill"][aria-haspopup="menu"]',
+)
+
+
+def _open_picker(page):
+    """피커 열고 (trigger, menuitemradio 목록) 반환. 못 열면 (None, [])."""
+    page.wait_for_selector("#prompt-textarea", timeout=15000)
+    trig = None
+    for sel in PICKER_TRIGGERS:
+        trig = page.query_selector(sel)
+        if trig:
+            break
+    if not trig:
+        return None, []
+    trig.click()
+    time.sleep(1.2)
+    return trig, page.query_selector_all('[role="menuitemradio"]')
+
+
+def list_models() -> dict:
+    """모델/effort 피커 옵션 live 조회 (추측 금지 원칙).
+
+    2026-07 피커는 effort 티어 목록 (예: Instant(5.5)/Medium/High/Extra High/Pro).
+    Returns: {ok, current, options:[{label, checked}]}
+    """
+    p, browser, page = _with_page()
+    try:
+        page.bring_to_front()
+        trig, items = _open_picker(page)
+        if trig is None:
+            return {"ok": False, "reason": "피커 트리거 없음 (PICKER_TRIGGERS 갱신 필요)"}
+        options = []
+        for el in items:
+            txt = (el.inner_text() or "").strip().replace("\n", " ")
+            options.append({"label": txt, "checked": el.get_attribute("aria-checked") == "true"})
+        page.keyboard.press("Escape")
+        current = next((o["label"] for o in options if o["checked"]), None)
+        return {"ok": True, "current": current, "options": options}
+    finally:
+        _close(p, browser)
+
+
+def select_model(label: str) -> dict:
+    """피커에서 label(부분일치·대소문자 무시)의 모델/effort 를 선택.
+
+    Returns: {ok, selected, current_pill} / 실패 시 {ok:False, reason, options}
+    """
+    p, browser, page = _with_page()
+    try:
+        page.bring_to_front()
+        trig, items = _open_picker(page)
+        if trig is None:
+            return {"ok": False, "reason": "피커 트리거 없음"}
+        want = label.strip().lower()
+        target, labels = None, []
+        for el in items:
+            txt = (el.inner_text() or "").strip().replace("\n", " ")
+            labels.append(txt)
+            if target is None and (want == txt.lower() or want in txt.lower()):
+                target = el
+        if target is None:
+            page.keyboard.press("Escape")
+            return {"ok": False, "reason": f"'{label}' 일치 항목 없음", "options": labels}
+        already = target.get_attribute("aria-checked") == "true"
+        if already:
+            page.keyboard.press("Escape")
+        else:
+            target.click()
+        time.sleep(0.8)
+        pill = page.query_selector(PICKER_TRIGGERS[1]) or page.query_selector(PICKER_TRIGGERS[0])
+        pill_text = (pill.inner_text() or "").strip() if pill else None
+        return {"ok": True, "selected": label, "already_selected": already, "current_pill": pill_text}
     finally:
         _close(p, browser)
 
@@ -231,7 +393,8 @@ def ask_in_conversation(conversation_id: str, prompt: str, wait_timeout: float =
                 break
             time.sleep(0.5)
         before = page.evaluate(JS_COUNT_ASST)
-        dom_text, after, url = _send_and_wait(page, prompt, wait_timeout, before)
+        baseline = page.evaluate(JS_LAST_ASST) or ""
+        dom_text, after, url = _send_and_wait(page, prompt, wait_timeout, before, baseline_text=baseline)
         conv = page.evaluate(JS_GET_CONV, conversation_id)
         res = _answer_result(prompt, conversation_id, conv, dom_text, clean)
         res["assistant_before_after"] = [before, after]

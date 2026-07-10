@@ -1,6 +1,8 @@
 """ChatGPT 에 질문 보내고 답변 회수 (새 채팅).
 
-사용: python ask_chatgpt.py "질문"   (인자 없으면 기본 질문)
+사용: python ask_chatgpt.py "질문" ["세션 제목"]   (인자 없으면 기본 질문)
+세션 제목을 주면(또는 config 의 session.title_prefix 가 있으면) 생성된 대화
+제목을 바꿔 목록에서 추적관리할 수 있다.
 playwrite.md 원칙: CDP attach(9223), live-verified 선택자, 응답완료 폴링,
 URL=/c/<id> 진실신호, 결과는 API(Bearer)로 회수, UTF-8 저장 / ASCII 요약.
 """
@@ -15,9 +17,12 @@ def _f(h, p, *a, **k):
     return _o(h, p, *a, **k)
 socket.getaddrinfo = _f
 from playwright.sync_api import sync_playwright
+import chatgpt_client as cc
+from chatgpt_client import CDP  # 포트: env CHATGPT_CDP_PORT > config.json > 9223
 
 KST = timezone(timedelta(hours=9))
 PROMPT = sys.argv[1] if len(sys.argv) > 1 else "한국선급(Korean Register)에 대해서 알려줘."
+TITLE = (sys.argv[2] if len(sys.argv) > 2 else None) or cc._auto_title(PROMPT)  # 세션 제목(추적관리)
 
 LAST_ASSISTANT = r"""() => {
   const n = document.querySelectorAll('[data-message-author-role="assistant"]');
@@ -25,7 +30,7 @@ LAST_ASSISTANT = r"""() => {
   const el = n[n.length-1];
   return (el.innerText || el.textContent || '').trim();
 }"""
-IS_GENERATING = r"""() => !!document.querySelector('[data-testid="stop-button"], [aria-label*="중지"], [aria-label*="Stop streaming"]')"""
+IS_GENERATING = r"""() => !!document.querySelector('[data-testid="stop-button"], [data-testid="composer-stop-button"], button[aria-label*="stop" i], [aria-label*="중지"]')"""
 GET_CONV = r"""
 async (cid) => {
   const sR = await fetch('/api/auth/session', {credentials:'include', headers:{'accept':'application/json'}});
@@ -54,7 +59,7 @@ def fmt(ts):
     except Exception: return "?"
 
 with sync_playwright() as p:
-    b = p.chromium.connect_over_cdp("http://localhost:9223")
+    b = p.chromium.connect_over_cdp(CDP)
     page = next((pg for pg in b.contexts[0].pages if "chatgpt.com" in pg.url), None) or b.contexts[0].new_page()
     page.bring_to_front()
 
@@ -69,10 +74,11 @@ with sync_playwright() as p:
     page.keyboard.type(PROMPT, delay=20)
     time.sleep(0.3)
     sent = False
-    try:
-        btn = page.query_selector('[data-testid="send-button"]')
-        if btn and btn.is_enabled(): btn.click(); sent = True
-    except Exception: pass
+    for sel in ('[data-testid="send-button"]', '#composer-submit-button', '[data-testid="composer-submit-button"]', 'button[aria-label="Send prompt"]'):
+        try:
+            btn = page.query_selector(sel)
+            if btn and btn.is_enabled(): btn.click(); sent = True; break
+        except Exception: pass
     if not sent: page.keyboard.press("Enter")
 
     log("응답 대기(폴링)")
@@ -93,6 +99,10 @@ with sync_playwright() as p:
     data = page.evaluate(GET_CONV, cid) if cid else {"ok": False, "why": "no /c/ url", "url": url}
     data["conversation_id"] = cid
     data.setdefault("dom_text", text)
+    if cid and TITLE:
+        rn = page.evaluate(cc.JS_RENAME, [cid, TITLE])
+        data["renamed"] = bool(rn.get("ok"))
+        if rn.get("ok"): data["title"] = TITLE
     page.screenshot(path="_ask.png")
     b.close()
 
