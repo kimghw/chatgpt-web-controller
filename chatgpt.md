@@ -110,6 +110,7 @@
 |---|---|---|
 | [launch_chrome.py](launch_chrome.py) | 디버그 Chrome 기동(+선택 자동 로그인) | `python launch_chrome.py` → `{launched, logged_in, email}`. 설정: `config.json` |
 | [http_server.py](http_server.py) | localhost HTTP 서버 (탭 풀 병렬, §6) | `python http_server.py` → `http://127.0.0.1:8765/docs` |
+| [autostart.ps1](autostart.ps1) | 서버 Windows 자동 실행 등록/해제 | 시작프로그램에 pythonw 바로가기. 해제: `-Remove`. 로그: `server.log` |
 | [fetch_chats.py](fetch_chats.py) | 전체 대화 리스트 회수 | `python fetch_chats.py` → `chats.json` (+ 별도 정리: `chats_list.md`) |
 | [ask_chatgpt.py](ask_chatgpt.py) | 새 채팅: 질문→답변 회수(+세션 제목) | `python ask_chatgpt.py "질문" ["세션 제목"]` → `answer.md`/`answer.json` |
 | [ask_in_existing.py](ask_in_existing.py) | 기존 대화 이어쓰기(맥락 유지) | `python ask_in_existing.py <conversation_id> "질문"` → `existing_answer.md`/`.json` |
@@ -131,49 +132,30 @@
 
 ---
 
-## 6. MCP 서버
-
-위 기능을 MCP(Model Context Protocol) 도구로 노출. 동기 Playwright 코어([chatgpt_client.py](chatgpt_client.py))를
-`asyncio.to_thread` 로 감싼 FastMCP 서버([server.py](server.py)).
-
-**구성 파일**
-- [chatgpt_client.py](chatgpt_client.py) — 코어 로직 (CLI 스크립트와 공유)
-- [server.py](server.py) — FastMCP stdio 서버
-- [.mcp.json](.mcp.json) — 프로젝트 단위 등록(Claude Code 가 자동 감지, 승인 시 활성)
-- [launch_chrome.py](launch_chrome.py) — 디버그 Chrome 기동(+선택 자동 로그인)
-- `config.json` — 로컬 설정: 포트·Chrome 경로·로그인 정보·세션 제목 접두사 (git 제외, 템플릿 [config.example.json](config.example.json))
-
-**도구**
-| 도구 | 인자 | 하는 일 |
-|---|---|---|
-| `chatgpt_session_status` | — | 로그인/세션 상태 (`logged_in`,`email`,`expires`) |
-| `chatgpt_list_conversations` | `limit=50`, `include_archived=false` | 대화 목록(최신순). `limit=0` 이면 전체 |
-| `chatgpt_get_conversation` | `conversation_id=""` | 대화 전체 메시지(빈 값=활성 탭). 내부 마커 정리됨 |
-| `chatgpt_ask` | `prompt`, `wait_timeout=150`, `title=""` | 새 채팅 질의→답변 회수 (계정에 대화 생성). `title` 지정 시(또는 config `session.title_prefix`) 대화 제목을 바꿔 추적관리 |
-| `chatgpt_ask_in_conversation` | `conversation_id`, `prompt`, `wait_timeout=150` | 기존 대화 이어쓰기 질의→답변 (맥락 유지) |
-| `chatgpt_rename_conversation` | `conversation_id`, `title` | 대화(세션) 제목 변경 — 추적관리용 |
-| `chatgpt_list_models` | — | 모델/effort 피커 옵션 live 조회 (`{current, options[]}`) |
-| `chatgpt_select_model` | `label` | 피커에서 모델/effort 선택 (부분일치). 새 채팅에 적용 |
-
-**스킬**: [/gpt-chrome](.claude/skills/gpt-chrome/SKILL.md) — 바탕화면 전용 바로가기 생성 + Chrome 기동 + 자동 로그인.
-[/gpt-ask](.claude/skills/gpt-ask/SKILL.md) — 질문 전 AskUserQuestion 으로 모델/effort 선택받고 전송.
-
-**전제**: ChatGPT 에 로그인된 Chrome 이 `--remote-debugging-port=9223` 으로 떠 있어야 함(없으면 `python launch_chrome.py`, §1 단계 1).
-포트/Chrome 경로/로그인 정보는 `config.json` (템플릿: [config.example.json](config.example.json), git 제외). 포트 우선순위: env `CHATGPT_CDP_PORT` > `config.json` > 9223.
-
-**등록**
-- 프로젝트 자동 감지: 이 폴더에서 Claude Code 를 열면 `.mcp.json` 의 `chatgpt` 서버를 승인 후 사용.
-- 또는 전역 등록: `claude mcp add chatgpt -- python "C:/Users/sscb/chatgpt-web-controller/server.py"`
-
-**의존성**: `pip install "mcp[cli]" playwright` (Playwright 브라우저는 CDP attach 라 별도 설치 불요).
-
-**직접 실행/디버그**: `python server.py` (stdio 대기). 동작 확인은 MCP 클라이언트로 `tools/list`·`call_tool`.
-
-### HTTP 서버 (탭 풀 병렬)
+## 6. HTTP 서버 (탭 풀 병렬)
 
 [http_server.py](http_server.py) — localhost FastAPI. 로그인된 디버그 Chrome 에 상주 연결(async Playwright)하고,
 **새 채팅은 탭 풀에서 병렬 처리**한다. 탭 수는 `config.json` `server.max_tabs` (기본 **5**, 2~5 권장).
 서버 시작 시 포트가 죽어 있으면 자동 기동+로그인(launch_chrome).
+(과거 MCP 서버 `server.py`/`.mcp.json` 은 2026-07-10 제거 — 필요 시 git 이력 `27cba0d` 에서 복원.)
+
+**구성 파일**
+- [chatgpt_client.py](chatgpt_client.py) — 코어 로직 (HTTP 서버·CLI 스크립트가 공유)
+- [http_server.py](http_server.py) — localhost FastAPI 서버
+- [launch_chrome.py](launch_chrome.py) — 디버그 Chrome 기동(+선택 자동 로그인)
+- `config.json` — 로컬 설정: 포트·Chrome 경로·로그인 정보·세션 제목 접두사·`server.max_tabs` (git 제외, 템플릿 [config.example.json](config.example.json))
+
+**스킬**: [/gpt-chrome](.claude/skills/gpt-chrome/SKILL.md) — 바탕화면 전용 바로가기 생성 + Chrome 기동 + 자동 로그인.
+[/gpt-ask](.claude/skills/gpt-ask/SKILL.md) — 질문 전 AskUserQuestion 으로 모델/effort 선택받고 HTTP 서버로 전송.
+[/gpt-server](.claude/skills/gpt-server/SKILL.md) — 서버 시작/중지/상태 + Windows 자동 실행(autostart) 등록/해제.
+
+**Windows 자동 실행**: 시작프로그램 폴더의 `chatgpt-web-controller.lnk` (pythonw, 무콘솔) 로 로그온 시 서버 자동 기동.
+등록/해제는 [autostart.ps1](autostart.ps1) (`-Remove` 로 해제). 무콘솔 실행 로그는 `server.log`, 중복 실행은 포트 가드로 자동 차단.
+
+**전제**: ChatGPT 에 로그인된 Chrome 이 `--remote-debugging-port=9223` 으로 떠 있어야 함 — 없으면 서버가 자동 기동.
+포트/Chrome 경로/로그인 정보는 `config.json`. 포트 우선순위: env `CHATGPT_CDP_PORT` > `config.json` > 9223.
+
+**의존성**: `pip install fastapi uvicorn playwright` (Playwright 브라우저는 CDP attach 라 별도 설치 불요).
 
 실행: `python http_server.py` → `http://127.0.0.1:8765` (Swagger: `/docs`)
 

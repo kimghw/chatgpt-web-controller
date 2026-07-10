@@ -331,6 +331,22 @@ async def rename(body: RenameBody):
     return res
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    import socket
+    with socket.socket() as s:
+        return s.connect_ex((host, port)) == 0
+
+
 if __name__ == "__main__":
+    import os
+    import sys
+
+    if sys.stdout is None or sys.stderr is None:
+        # pythonw(무콘솔, 윈도우 자동 실행) — 로그를 server.log 로
+        _log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.log"), "a", encoding="utf-8")
+        sys.stdout = sys.stderr = _log
+    if _port_in_use("127.0.0.1", PORT):
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] port {PORT} already in use - exit (중복 실행 방지)")
+        sys.exit(0)
     import uvicorn
     uvicorn.run(app, host=HOST, port=PORT)

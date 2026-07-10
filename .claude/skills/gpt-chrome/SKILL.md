@@ -18,7 +18,7 @@ description: ChatGPT 웹컨트롤 초기 준비 — 바탕화면 전용 바로�
    - config.json 의 `login.email/password` 로 자동 입력. 2FA/CAPTCHA/소셜 로그인이 뜨면
      사용자에게 "열린 Chrome 창에서 직접 완료해 달라"고 안내하고 스크립트가 최대 180초 대기한다.
    - 마지막 줄 JSON `{launched, logged_in, email}` 이 결과다.
-3. **결과 보고**: `logged_in: true` 면 준비 완료 — 이후 MCP 도구(chatgpt_*)와 CLI 스크립트를 바로 쓸 수 있다.
+3. **결과 보고**: `logged_in: true` 면 준비 완료 — 이후 HTTP 서버(`python http_server.py`)와 CLI 스크립트를 바로 쓸 수 있다.
    `false` 면 사용자에게 그 Chrome 창에서 로그인해 달라고 안내한다 (프로필이 유지되므로 1회면 충분).
 
 ## 주의

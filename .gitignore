@@ -9,3 +9,6 @@ venv/
 .env
 *.local
 config.json
+
+# Runtime
+server.log

@@ -1,6 +1,6 @@
 """ChatGPT 자동화 코어 (CDP attach, 동기 Playwright).
 
-server.py(MCP) 와 CLI 스크립트가 공유. playwrite.md / chatgpt.md 의 검증된 기법:
+http_server.py 와 CLI 스크립트가 공유. playwrite.md / chatgpt.md 의 검증된 기법:
   - 로그인된 디버그 Chrome 에 CDP attach (포트: env CHATGPT_CDP_PORT > config.json > 9223), contexts[0] 재사용
     (Chrome 136+ 는 기본 프로필 디버깅 불가 → launch_chrome.py 로 전용 프로필 기동)
   - 인증은 /api/auth/session 의 accessToken 을 Bearer 로 (쿠키만으론 익명 ua-)
