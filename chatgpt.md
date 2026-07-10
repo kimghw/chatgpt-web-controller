@@ -113,11 +113,12 @@
 |---|---|---|
 | [launch_chrome.py](launch_chrome.py) | 디버그 Chrome 기동(+선택 자동 로그인) | `python launch_chrome.py` → `{launched, logged_in, email}`. 설정: `config.json` |
 | [http_server.py](http_server.py) | localhost HTTP 서버 (탭 풀 병렬, §6) | `python http_server.py` → `http://127.0.0.1:8765/docs` |
-| [autostart.ps1](autostart.ps1) | 서버 Windows 자동 실행 등록/해제 | 시작프로그램에 pythonw 바로가기. 해제: `-Remove`. 로그: `server.log` |
-| [fetch_chats.py](fetch_chats.py) | 전체 대화 리스트 회수 | `python fetch_chats.py` → `chats.json` (+ 별도 정리: `chats_list.md`) |
-| [ask_chatgpt.py](ask_chatgpt.py) | 새 채팅: 질문→답변 회수(+세션 제목) | `python ask_chatgpt.py "질문" ["세션 제목"]` → `answer.md`/`answer.json` |
-| [ask_in_existing.py](ask_in_existing.py) | 기존 대화 이어쓰기(맥락 유지) | `python ask_in_existing.py <conversation_id> "질문"` → `existing_answer.md`/`.json` |
-| [fetch_result.py](fetch_result.py) | 열린/특정 대화 결과만 회수 | `python fetch_result.py [conversation_id]` → `result_conversation.md`/`.json` |
+| [setup/autostart.ps1](setup/autostart.ps1) | 서버 Windows 자동 실행 등록/해제 | 시작프로그램에 pythonw 바로가기. 해제: `-Remove`. 로그: `server.log` |
+| [setup/create_shortcut.ps1](setup/create_shortcut.ps1) | 바탕화면 전용 Chrome 바로가기 생성 | `ChatGPT 전용.lnk` (config 기준) |
+| [cli/fetch_chats.py](cli/fetch_chats.py) | 전체 대화 리스트 회수 | `python cli/fetch_chats.py` → `chats.json` |
+| [cli/ask_chatgpt.py](cli/ask_chatgpt.py) | 새 채팅: 질문→답변 회수(+세션 제목) | `python cli/ask_chatgpt.py "질문" ["세션 제목"]` → `answer.md`/`.json` |
+| [cli/ask_in_existing.py](cli/ask_in_existing.py) | 기존 대화 이어쓰기(맥락 유지) | `python cli/ask_in_existing.py <conversation_id> "질문"` → `existing_answer.md`/`.json` |
+| [cli/fetch_result.py](cli/fetch_result.py) | 열린/특정 대화 결과만 회수 | `python cli/fetch_result.py [conversation_id]` → `result_conversation.md`/`.json` |
 
 `<conversation_id>` 는 `chats.json` 의 `id` 또는 활성 탭 URL `/c/<id>` 에서 얻는다.
 
@@ -153,7 +154,7 @@
 [/gpt-server](.claude/skills/gpt-server/SKILL.md) — 서버 시작/중지/상태 + Windows 자동 실행(autostart) 등록/해제.
 
 **Windows 자동 실행**: 시작프로그램 폴더의 `chatgpt-web-controller.lnk` (pythonw, 무콘솔) 로 로그온 시 서버 자동 기동.
-등록/해제는 [autostart.ps1](autostart.ps1) (`-Remove` 로 해제). 무콘솔 실행 로그는 `server.log`, 중복 실행은 포트 가드로 자동 차단.
+등록/해제는 [setup/autostart.ps1](setup/autostart.ps1) (`-Remove` 로 해제). 무콘솔 실행 로그는 `server.log`, 중복 실행은 포트 가드로 자동 차단.
 
 **전제**: ChatGPT 에 로그인된 Chrome 이 `--remote-debugging-port=9223` 으로 떠 있어야 함 — 없으면 서버가 자동 기동.
 포트/Chrome 경로/로그인 정보는 `config.json`. 포트 우선순위: env `CHATGPT_CDP_PORT` > `config.json` > 9223.

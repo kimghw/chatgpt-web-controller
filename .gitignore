@@ -13,3 +13,14 @@ config.json
 # Runtime
 server.log
 downloads/
+
+# CLI 산출물
+answer.md
+answer.json
+existing_answer.md
+existing_answer.json
+result_conversation.md
+result_conversation.json
+chats.json
+_ask.png
+_existing.png

@@ -3,7 +3,7 @@
 # Korean filename is built from [char] codepoints to avoid console-encoding mangling.
 $ErrorActionPreference = "Stop"
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)  # setup/ 의 상위 = 프로젝트 루트
 $cfgPath = Join-Path $root "config.json"
 $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
 

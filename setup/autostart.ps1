@@ -14,7 +14,7 @@ if ($Remove) {
     exit 0
 }
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)  # setup/ 의 상위 = 프로젝트 루트
 $py = (Get-Command python).Source
 $pyw = Join-Path (Split-Path $py) "pythonw.exe"
 if (-not (Test-Path $pyw)) { throw "pythonw.exe not found next to $py" }

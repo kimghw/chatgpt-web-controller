@@ -27,6 +27,8 @@ def _ipv4(host, port, *a, **k):
 
 socket.getaddrinfo = _ipv4  # type: ignore[assignment]
 
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 루트의 chatgpt_client 임포트
 from chatgpt_client import CDP  # 포트: env CHATGPT_CDP_PORT > config.json > 9223
 
 JS_FETCH_ALL = r"""

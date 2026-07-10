@@ -15,6 +15,23 @@ curl / python / Claude ──→ http_server.py (127.0.0.1:8765) ──→ 전�
 - 쓰기(질문 전송)는 **웹 UI 조작**으로 — 봇 방어(Sentinel/PoW)에 안 걸리는 유일한 경로
 - 검증 기준: **2026-07-10, ChatGPT 5.6 / Chrome 150** (상세: [chatgpt.md](chatgpt.md) §7)
 
+### 폴더 구조
+
+```
+chatgpt-web-controller/
+├── chatgpt_client.py     # 코어: 셀렉터·내부 API·도구·모델·이미지 (서버·CLI 공유)
+├── http_server.py        # 메인: localhost HTTP 서버 (탭 풀 병렬)
+├── launch_chrome.py      # 전용 Chrome 기동 + 자동 로그인 (서버가 자동 호출)
+├── config.json           # 로컬 설정 (git 제외, 템플릿 config.example.json)
+├── setup/                # 설치·기동 스크립트
+│   ├── create_shortcut.ps1   # 바탕화면 "ChatGPT 전용" 바로가기
+│   └── autostart.ps1         # Windows 로그온 시 서버 자동 실행 등록/해제
+├── cli/                  # 서버 없이 쓰는 단발 CLI 도구
+│   ├── ask_chatgpt.py · ask_in_existing.py
+│   └── fetch_chats.py · fetch_result.py
+└── .claude/skills/       # Claude Code 스킬 (gpt-chrome · gpt-server · gpt-ask)
+```
+
 ---
 
 ## 1. 요구사항
@@ -60,8 +77,8 @@ copy config.example.json config.json
 **② 바탕화면 바로가기 + 첫 로그인**
 
 ```powershell
-powershell -File create_shortcut.ps1    # 바탕화면에 "ChatGPT 전용.lnk" 생성
-python launch_chrome.py                 # 전용 Chrome 기동 + 자동 로그인 (config 의 login)
+powershell -File setup\create_shortcut.ps1   # 바탕화면에 "ChatGPT 전용.lnk" 생성
+python launch_chrome.py                       # 전용 Chrome 기동 + 자동 로그인 (config 의 login)
 ```
 
 - 이후 ChatGPT 를 직접 쓸 때도 **이 바로가기로 연 창**을 쓰면 사람과 자동화가 같은 세션을 공유한다.
@@ -70,7 +87,7 @@ python launch_chrome.py                 # 전용 Chrome 기동 + 자동 로그�
 **③ (선택) Windows 시작 시 서버 자동 실행**
 
 ```powershell
-powershell -File autostart.ps1          # 등록  (해제: powershell -File autostart.ps1 -Remove)
+powershell -File setup\autostart.ps1    # 등록  (해제: powershell -File setup\autostart.ps1 -Remove)
 ```
 
 로그온하면 서버가 콘솔 창 없이(pythonw) 자동으로 뜨고, Chrome 기동+로그인까지 이어서 한다.
@@ -154,10 +171,10 @@ r = requests.post("http://127.0.0.1:8765/ask", timeout=2000,
 
 | 스크립트 | 사용 |
 |---|---|
-| [ask_chatgpt.py](ask_chatgpt.py) | `python ask_chatgpt.py "질문" ["세션 제목"]` → `answer.md/.json` |
-| [ask_in_existing.py](ask_in_existing.py) | `python ask_in_existing.py <대화id> "후속 질문"` |
-| [fetch_chats.py](fetch_chats.py) | 전체 대화 목록 → `chats.json` |
-| [fetch_result.py](fetch_result.py) | 열린/특정 대화 내용 회수 → `result_conversation.md/.json` |
+| [cli/ask_chatgpt.py](cli/ask_chatgpt.py) | `python cli/ask_chatgpt.py "질문" ["세션 제목"]` → `answer.md/.json` |
+| [cli/ask_in_existing.py](cli/ask_in_existing.py) | `python cli/ask_in_existing.py <대화id> "후속 질문"` |
+| [cli/fetch_chats.py](cli/fetch_chats.py) | 전체 대화 목록 → `chats.json` |
+| [cli/fetch_result.py](cli/fetch_result.py) | 열린/특정 대화 내용 회수 → `result_conversation.md/.json` |
 
 ## 4. 트러블슈팅
 

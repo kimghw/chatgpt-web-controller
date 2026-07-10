@@ -10,7 +10,7 @@ description: ChatGPT 웹컨트롤 초기 준비 — 바탕화면 전용 바로�
 
 ## 실행 순서 (모두 프로젝트 루트에서)
 
-1. **바로가기 생성/복구**: PowerShell 로 `create_shortcut.ps1` 실행.
+1. **바로가기 생성/복구**: PowerShell 로 `setup\create_shortcut.ps1` 실행 (프로젝트 루트에서).
    - 바탕화면에 `ChatGPT 전용.lnk` 가 만들어진다 (이미 있으면 config.json 기준으로 갱신).
    - 출력 `SHORTCUT OK: ...` 확인.
 2. **Chrome 기동 + 자동 로그인**: `python launch_chrome.py` 실행 (2~3분까지 걸릴 수 있음).

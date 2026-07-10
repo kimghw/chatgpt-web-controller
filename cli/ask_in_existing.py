@@ -14,6 +14,8 @@ def _f(h, p, *a, **k):
     else: k["family"] = socket.AF_INET
     return _o(h, p, *a, **k)
 socket.getaddrinfo = _f
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 루트의 chatgpt_client 임포트
 from playwright.sync_api import sync_playwright
 from chatgpt_client import CDP  # 포트: env CHATGPT_CDP_PORT > config.json > 9223
 

@@ -22,12 +22,12 @@ description: ChatGPT HTTP 서버(127.0.0.1:8765) 관리 — 시작/중지/상태
 - `GET /status` 결과(로그인 세션, 탭 풀)를 보고. 응답 없으면 "서버 꺼짐" + server.log 마지막 몇 줄 확인.
 
 ## `autostart` — Windows 시작 시 자동 실행 등록
-- PowerShell 로 프로젝트 루트의 `autostart.ps1` 실행.
+- PowerShell 로 `setup\autostart.ps1` 실행 (프로젝트 루트에서).
 - 시작프로그램 폴더에 `chatgpt-web-controller.lnk` (pythonw, 무콘솔) 가 생긴다.
 - 로그는 콘솔 대신 프로젝트 루트 `server.log` 에 쌓임. 중복 실행은 서버가 스스로 방지(포트 가드).
 
 ## `autostart off` — 자동 실행 해제
-- `powershell -File autostart.ps1 -Remove`
+- `powershell -File setup\autostart.ps1 -Remove`
 
 ## 주의
 - 서버 중지 시 **사용자의 Chrome(일반/전용 모두)은 절대 종료하지 않는다** — 8765 포트의 python 프로세스만.
