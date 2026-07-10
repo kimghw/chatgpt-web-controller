@@ -145,6 +145,86 @@ JS_COUNT_ASST = r"""() => { let n=document.querySelectorAll('[data-message-autho
 # 생성중: aria 라벨 문구가 자주 바뀌므로("Stop streaming"→"Stop answering") 부분·대소문자 무시 매칭
 JS_IS_GEN = r"""() => !!document.querySelector('[data-testid="stop-button"], [data-testid="composer-stop-button"], button[aria-label*="stop" i], [aria-label*="중지"]')"""
 
+# 마지막 assistant 턴의 이미지 (이미지 생성 결과 회수용)
+JS_LAST_IMGS = r"""() => { let n=document.querySelectorAll('[data-message-author-role="assistant"]'); if(!n.length) n=document.querySelectorAll('section[data-turn="assistant"]'); if(!n.length) return []; const el=n[n.length-1]; return [...el.querySelectorAll('img')].map(i=>i.src).filter(s=>s && !s.startsWith('data:image/svg')); }"""
+# 페이지 컨텍스트에서 이미지(blob:/서명 URL)를 base64 로 (외부에서 못 받는 blob 대응)
+JS_FETCH_B64 = r"""async (src) => { const r = await fetch(src, {credentials:'include'}); const b = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }"""
+
+# 컴포저 + 메뉴의 도구들 (2026-07-10 live: role 없는 행 — 텍스트 정확일치로 클릭)
+PLUS_BTN = '[data-testid="composer-plus-btn"]'
+TOOL_LABELS = {
+    "create_image": "Create image",
+    "web_search": "Web search",
+    "deep_research": "Deep research",
+}
+
+
+def _composer_text(page) -> str:
+    form = page.query_selector('form[data-type="unified-composer"]') or page.query_selector("form")
+    return (form.inner_text() or "") if form else ""
+
+
+def _reset_composer(page):
+    """컴포저 초기화 — 이전 요청에서 남은 도구 칩(Create image/Deep research/Web search)을 제거.
+    탭 풀 재사용 시 도구 상태가 누수되는 것을 막는다 (2026-07-10 확인: 칩은 ProseMirror 인라인 pill,
+    리로드/토글로는 안 지워지고 Ctrl+A→Delete 로만 제거됨). 프롬프트 입력 전에 호출.
+    """
+    try:
+        page.click("#prompt-textarea")
+        page.keyboard.press("Control+a")
+        page.keyboard.press("Delete")
+        time.sleep(0.3)
+    except Exception:
+        pass
+
+
+def _select_tool(page, tool: str) -> dict:
+    """+ 메뉴에서 도구 선택 → 컴포저에 칩이 생겼는지 확인."""
+    label = TOOL_LABELS.get(tool)
+    if not label:
+        return {"ok": False, "reason": f"지원하지 않는 tool '{tool}' (가능: {list(TOOL_LABELS)})"}
+    page.click(PLUS_BTN)
+    time.sleep(1.2)
+    menu = page.locator('[data-radix-popper-content-wrapper]')
+    loc = menu.locator(f'span:text-is("{label}")') if menu.count() else page.locator(f'span:text-is("{label}")')
+    try:
+        loc.first.click(timeout=5000)
+    except Exception:
+        page.keyboard.press("Escape")
+        return {"ok": False, "reason": f"+ 메뉴에서 '{label}' 못 찾음"}
+    time.sleep(0.8)
+    if label.lower() not in _composer_text(page).lower():
+        return {"ok": False, "reason": f"'{label}' 칩이 컴포저에 안 생김"}
+    return {"ok": True, "tool": tool, "label": label}
+
+
+def _attach_files(page, paths) -> dict:
+    """form 안의 범용 file input 에 로컬 파일 주입. 업로드 완료는 전송버튼 활성화로 판정."""
+    import os as _os
+    missing = [p for p in paths if not _os.path.exists(p)]
+    if missing:
+        return {"ok": False, "reason": f"파일 없음: {missing}"}
+    inp = page.query_selector('form input[type="file"]:not([accept])') or page.query_selector('form input[type="file"]')
+    if not inp:
+        return {"ok": False, "reason": "컴포저 file input 없음"}
+    inp.set_input_files(paths)
+    return {"ok": True, "count": len(paths)}
+
+
+def _wait_send_ready(page, timeout: float = 120.0) -> bool:
+    """전송 버튼이 활성화될 때까지 폴링 (파일 업로드 완료 대기)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for sel in SEND_SELECTORS:
+            try:
+                btn = page.query_selector(sel)
+                if btn and btn.is_enabled():
+                    return True
+            except Exception:
+                pass
+        time.sleep(1.0)
+    return False
+
 
 # ---------------- 연결 헬퍼 ----------------
 def _with_page(navigate: Optional[str] = None):
@@ -169,16 +249,21 @@ def _close(p, browser):
         p.stop()
 
 
-def _send_and_wait(page, prompt: str, wait_timeout: float, before_count: int, baseline_text: str = ""):
+def _send_and_wait(page, prompt: str, wait_timeout: float, before_count: int, baseline_text: str = "",
+                   send_ready_timeout: float = 0.0):
     """컴포저에 입력·전송 후 새 응답 완료까지 폴링. (dom_text, after_count, url) 반환.
 
-    새 답변 판정: assistant 수 증가 OR 마지막 assistant 텍스트가 전송 전(baseline)과 달라짐.
+    새 답변 판정: assistant 수 증가 OR 마지막 assistant 텍스트가 전송 전(baseline)과 달라짐
+    OR 마지막 턴에 이미지 생성(텍스트 없는 이미지 답변 대응).
     (긴 대화는 DOM 가상화로 스크롤 밖 턴이 언로드돼 개수만으론 놓칠 수 있음 — 2026-07 확인)
+    send_ready_timeout > 0 이면 전송 전에 전송버튼 활성화를 기다림 (파일 업로드 완료 대기).
     """
     page.wait_for_selector("#prompt-textarea", timeout=15000)
     page.click("#prompt-textarea")
     page.keyboard.type(prompt, delay=15)
     time.sleep(0.3)
+    if send_ready_timeout > 0 and not _wait_send_ready(page, send_ready_timeout):
+        return "", before_count, page.evaluate("() => location.href")
     sent = False
     for sel in SEND_SELECTORS:
         try:
@@ -195,10 +280,11 @@ def _send_and_wait(page, prompt: str, wait_timeout: float, before_count: int, ba
     while time.time() < deadline:
         try:
             cnt = page.evaluate(JS_COUNT_ASST); cur = page.evaluate(JS_LAST_ASST) or ""; gen = page.evaluate(JS_IS_GEN)
+            imgs = len(page.evaluate(JS_LAST_IMGS)) if cnt > before_count else 0
         except Exception:
-            cnt, cur, gen = before_count, text, True
-        is_new = cnt > before_count or (cur and cur != baseline_text)
-        if is_new and cur and cur == text and not gen:
+            cnt, cur, gen, imgs = before_count, text, True, 0
+        is_new = cnt > before_count or (cur and cur != baseline_text) or imgs > 0
+        if is_new and (cur or imgs) and cur == text and not gen:
             stable += 1
             if stable >= 3:
                 break
@@ -261,11 +347,41 @@ def _auto_title(prompt: str) -> Optional[str]:
     return f"{prefix}{time.strftime('%y%m%d-%H%M')} {prompt[:30]}".strip()
 
 
-def ask(prompt: str, wait_timeout: float = 150.0, clean: bool = True, title: Optional[str] = None) -> dict:
+def save_images_from_page(page, out_dir: Optional[str] = None) -> list:
+    """마지막 assistant 턴의 이미지들을 로컬 파일로 저장. 저장된 경로 목록 반환."""
+    import base64
+    import os as _os
+    srcs = page.evaluate(JS_LAST_IMGS)
+    out_dir = out_dir or _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "downloads")
+    _os.makedirs(out_dir, exist_ok=True)
+    saved = []
+    for i, src in enumerate(srcs):
+        try:
+            data_url = page.evaluate(JS_FETCH_B64, src)
+            head, b64 = data_url.split(",", 1)
+            ext = "png"
+            if "image/jpeg" in head:
+                ext = "jpg"
+            elif "image/webp" in head:
+                ext = "webp"
+            path = _os.path.join(out_dir, f"img_{time.strftime('%y%m%d-%H%M%S')}_{i}.{ext}")
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(b64))
+            saved.append(path)
+        except Exception:
+            pass
+    return saved
+
+
+def ask(prompt: str, wait_timeout: float = 150.0, clean: bool = True, title: Optional[str] = None,
+        files: Optional[list] = None, tool: Optional[str] = None) -> dict:
     """새 채팅에서 질문 → 답변 회수. {ok, conversation_id, answer, model}.
 
-    title 을 주면(또는 config session.title_prefix 가 있으면) 생성된 대화의 제목을
-    바꿔 목록에서 추적관리할 수 있게 한다.
+    title: 대화 제목 지정(추적관리). 없으면 config session.title_prefix 규칙.
+    files: 첨부할 로컬 파일 경로 목록 (업로드 완료 대기 후 전송).
+    tool:  "create_image" | "web_search" | "deep_research" — 컴포저 + 메뉴에서 선택.
+           create_image 결과는 res["images"](URL)+res["image_files"](로컬 저장) 로 회수.
+           deep_research 는 수 분~수십 분 — wait_timeout 을 크게(예: 1800).
     """
     p, browser, page = _with_page(navigate=None)
     try:
@@ -274,12 +390,28 @@ def ask(prompt: str, wait_timeout: float = 150.0, clean: bool = True, title: Opt
             page.click('[data-testid="create-new-chat-button"]', timeout=5000)
         except Exception:
             page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_selector("#prompt-textarea", timeout=15000)
+        _reset_composer(page)   # 이전 요청의 도구 칩 누수 방지
+        if tool:
+            t = _select_tool(page, tool)
+            if not t.get("ok"):
+                return {"ok": False, "reason": t.get("reason"), "prompt": prompt}
+        if files:
+            a = _attach_files(page, files)
+            if not a.get("ok"):
+                return {"ok": False, "reason": a.get("reason"), "prompt": prompt}
         before = 0
-        dom_text, after, url = _send_and_wait(page, prompt, wait_timeout, before, baseline_text="")
+        dom_text, after, url = _send_and_wait(page, prompt, wait_timeout, before, baseline_text="",
+                                              send_ready_timeout=(120.0 if files else 0.0))
         m = re.search(r"/c/([0-9a-f-]+)", url)
         cid = m.group(1) if m else None
         conv = page.evaluate(JS_GET_CONV, cid) if cid else {"ok": False}
         res = _answer_result(prompt, cid, conv, dom_text, clean)
+        imgs = page.evaluate(JS_LAST_IMGS)
+        if imgs:
+            res["images"] = imgs
+            res["image_files"] = save_images_from_page(page)
+            res["ok"] = True
         final_title = title or _auto_title(prompt)
         if cid and final_title:
             rn = page.evaluate(JS_RENAME, [cid, final_title])

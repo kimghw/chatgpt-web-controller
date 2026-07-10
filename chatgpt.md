@@ -59,6 +59,9 @@
 | assistant 메시지 | `[data-message-author-role="assistant"]` | 마지막 노드의 `innerText`. 없으면 `section[data-turn="assistant"]` 폴백 (2026-05 턴 컨테이너 변경). **긴 대화는 가상화** — 스크롤 밖 턴이 DOM 에서 언로드되어 개수가 부정확할 수 있음 |
 | 생성중 표시 | `[data-testid="stop-button"]` | aria 라벨은 자주 바뀜("Stop streaming"→"Stop answering") → 정확 매칭 금지, `aria-label*="stop" i` 부분 매칭. 사라지면 응답 완료 |
 | 완료 확정 신호 | `[data-testid="copy-turn-action-button"]` | 턴이 완전히 끝나야 나타남 (2026-07-10 live 확인, aria `Copy response`) |
+| + 메뉴 (파일/도구) | `[data-testid="composer-plus-btn"]` | 열리면 **role 없는 행**들 — `span:text-is("...")` 로 클릭. 항목: `Add photos & files` / `Create image` / `Web search` / `Deep research`. 선택 시 컴포저에 칩 생김 |
+| 파일 첨부 input | `form input[type="file"]:not([accept])` | 파일종류 제한 없음·multiple. `set_input_files()` 로 주입, 업로드 완료는 전송버튼 활성화로 판정 |
+| 이미지 답변 | 마지막 assistant 턴의 `img` | blob:/서명 URL — 페이지 컨텍스트 fetch→base64 로 로컬 저장 |
 
 ### 2.3 플랜/모델 제약 (2026-07, GPT-5.6 시점)
 - **Free 플랜**: 선택 가능 모델은 **"ChatGPT (일상적인 작업에 적합)"** 하나 + "ChatGPT Plus 업그레이드" CTA(이건 `menuitem`, 선택 모델 아님). `default_model_slug` 는 `auto`. GPT-5.6 은 Free 미제공.
@@ -162,7 +165,7 @@
 | 엔드포인트 | 하는 일 |
 |---|---|
 | `GET /status` | 세션 + 탭 풀 상태 |
-| `POST /ask` `{prompt, title?, model?, wait_timeout?}` | 새 채팅 질문 — **병렬**. `model` 지정 시 그 탭 피커에서 선택("Instant"/"High"/"Pro"…) |
+| `POST /ask` `{prompt, title?, model?, files?, tool?, wait_timeout?}` | 새 채팅 질문 — **병렬**. `model`: 피커 선택("Instant"/"High"/"Pro"…) · `files`: 로컬 경로 목록 첨부 · `tool`: `create_image`/`web_search`/`deep_research`. 이미지 답변은 `images`(URL)+`image_files`(`downloads/` 저장) 반환. deep_research 는 `wait_timeout` 1800+ 권장 |
 | `POST /ask_in` `{conversation_id, prompt}` | 기존 대화 이어쓰기 — 같은 대화는 락으로 직렬 |
 | `GET /conversations` / `GET /conversation/{cid}` | 목록 / 상세 (내부 API) |
 | `GET /models` / `POST /select_model` | 피커 옵션 조회 / 선택 |
@@ -199,6 +202,9 @@
 - ✅ 대화 목록 39개 회수, 로그인 `ask()` 왕복 + `/c/<id>` URL 전환 정상
 - ✅ `PATCH /backend-api/conversation/<id>` 제목 변경 → 목록 반영까지 확인 (세션 제목 추적관리 실동작)
 - ✅ `default_model_slug` = **`gpt-5-6-pro`** (이 계정 기본값 — 5.6 시대 슬러그는 `gpt-5-6-*` 형태)
+- ✅ 파일 업로드: `form input[type=file]` 주입 → 마커 파일 내용 정확 복창 (53s)
+- ✅ web_search 도구: 실시간 서울 날씨 회수 (39s) / ✅ create_image: 빨간 원 이미지 3장 로컬 저장 (51s)
+- ✅ deep_research 칩 선택 확인 (실행은 할당량 보호로 미실시 — 수십 분 소요, `wait_timeout` 크게)
 - ✅ 모델/effort 피커: 이 계정 버킷은 `model-switcher-dropdown-button` testid **없음** →
   `button[class*="__composer-pill"][aria-haspopup="menu"]` (pill, 현재 티어 라벨 표시)가 트리거.
   메뉴 `menuitemradio` = **Instant 5.5 / Medium / High / Extra High / Pro** (+ 서브메뉴 `GPT-5.6 Sol`,

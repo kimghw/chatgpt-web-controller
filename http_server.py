@@ -74,20 +74,39 @@ conv_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 # ---------------- 브라우저 조작 (chatgpt_client 의 셀렉터/JS 재사용, async) ----------------
-async def _new_chat(page):
+async def _reset_composer(page):
+    """이전 요청에서 남은 도구 칩 제거 (탭 풀 재사용 시 도구 상태 누수 방지).
+    칩은 ProseMirror 인라인 pill — Ctrl+A→Delete 로만 제거됨 (2026-07-10 확인)."""
     try:
-        await page.click('[data-testid="create-new-chat-button"]', timeout=5000)
+        await page.click("#prompt-textarea")
+        await page.keyboard.press("Control+a")
+        await page.keyboard.press("Delete")
+        await asyncio.sleep(0.3)
     except Exception:
-        await page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=45000)
+        pass
+
+
+async def _new_chat(page):
+    # 항상 fresh new-chat 으로 goto — 풀 재사용 탭이 옛 /c/<id> 대화에 머물러 있어도
+    # 확실히 빈 새 채팅에서 시작 (create-new-chat 버튼은 그 상태에서 신뢰 불가, 2026-07-10 확인).
+    await page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=45000)
     await page.wait_for_selector("#prompt-textarea", timeout=15000)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.6)
+    await _reset_composer(page)   # 이전 요청의 도구 칩 누수 방지
 
 
-async def _send_and_wait(page, prompt: str, wait_timeout: float, before: int, baseline: str):
-    """입력·전송 후 완료 폴링. bring_to_front 없음 — 백그라운드 탭에서도 동작(병렬용)."""
+async def _send_and_wait(page, prompt: str, wait_timeout: float, before: int, baseline: str,
+                         send_ready_timeout: float = 0.0):
+    """입력·전송 후 완료 폴링. bring_to_front 없음 — 백그라운드 탭에서도 동작(병렬용).
+
+    send_ready_timeout > 0 이면 전송 전에 전송버튼 활성화 대기 (파일 업로드 완료).
+    이미지 답변(텍스트 없음)도 완료로 인정.
+    """
     await page.click("#prompt-textarea")
     await page.keyboard.type(prompt, delay=10)
     await asyncio.sleep(0.3)
+    if send_ready_timeout > 0 and not await _wait_send_ready_on(page, send_ready_timeout):
+        return "", page.url
     sent = False
     for sel in cc.SEND_SELECTORS:
         try:
@@ -106,10 +125,11 @@ async def _send_and_wait(page, prompt: str, wait_timeout: float, before: int, ba
             cnt = await page.evaluate(cc.JS_COUNT_ASST)
             cur = (await page.evaluate(cc.JS_LAST_ASST)) or ""
             gen = await page.evaluate(cc.JS_IS_GEN)
+            imgs = len(await page.evaluate(cc.JS_LAST_IMGS)) if cnt > before else 0
         except Exception:
-            cnt, cur, gen = before, text, True
-        is_new = cnt > before or (cur and cur != baseline)
-        if is_new and cur and cur == text and not gen:
+            cnt, cur, gen, imgs = before, text, True, 0
+        is_new = cnt > before or (cur and cur != baseline) or imgs > 0
+        if is_new and (cur or imgs) and cur == text and not gen:
             stable += 1
             if stable >= 3:
                 break
@@ -118,6 +138,79 @@ async def _send_and_wait(page, prompt: str, wait_timeout: float, before: int, ba
         text = cur
         await asyncio.sleep(1.0)
     return text, page.url
+
+
+async def _select_tool_on(page, tool: str) -> dict:
+    """+ 메뉴에서 도구(create_image/web_search/deep_research) 선택 → 칩 확인."""
+    label = cc.TOOL_LABELS.get(tool)
+    if not label:
+        return {"ok": False, "reason": f"지원하지 않는 tool '{tool}' (가능: {list(cc.TOOL_LABELS)})"}
+    await page.click(cc.PLUS_BTN)
+    await asyncio.sleep(1.2)
+    # 팝오버 메뉴 안의 항목으로 한정 (컴포저 칩 span 과 텍스트가 겹칠 수 있어 scope 필요)
+    menu = page.locator('[data-radix-popper-content-wrapper]')
+    loc = menu.locator(f'span:text-is("{label}")') if await menu.count() else page.locator(f'span:text-is("{label}")')
+    try:
+        await loc.first.click(timeout=5000)
+    except Exception:
+        await page.keyboard.press("Escape")
+        return {"ok": False, "reason": f"+ 메뉴에서 '{label}' 못 찾음"}
+    await asyncio.sleep(0.8)
+    form = await page.query_selector('form[data-type="unified-composer"]') or await page.query_selector("form")
+    form_text = (await form.inner_text()) if form else ""
+    if label.lower() not in form_text.lower():
+        return {"ok": False, "reason": f"'{label}' 칩이 컴포저에 안 생김"}
+    return {"ok": True, "tool": tool}
+
+
+async def _attach_files_on(page, paths: list) -> dict:
+    import os
+    missing = [p for p in paths if not os.path.exists(p)]
+    if missing:
+        return {"ok": False, "reason": f"파일 없음: {missing}"}
+    inp = await page.query_selector('form input[type="file"]:not([accept])') or await page.query_selector('form input[type="file"]')
+    if inp is None:
+        return {"ok": False, "reason": "컴포저 file input 없음"}
+    await inp.set_input_files(paths)
+    return {"ok": True, "count": len(paths)}
+
+
+async def _wait_send_ready_on(page, timeout: float = 120.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for sel in cc.SEND_SELECTORS:
+            try:
+                btn = await page.query_selector(sel)
+                if btn and await btn.is_enabled():
+                    return True
+            except Exception:
+                pass
+        await asyncio.sleep(1.0)
+    return False
+
+
+async def _save_images_on(page) -> tuple:
+    """마지막 assistant 턴의 이미지 URL 목록과 로컬 저장 경로 목록."""
+    import base64
+    import os
+    srcs = await page.evaluate(cc.JS_LAST_IMGS)
+    if not srcs:
+        return [], []
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+    os.makedirs(out_dir, exist_ok=True)
+    saved = []
+    for i, src in enumerate(srcs):
+        try:
+            data_url = await page.evaluate(cc.JS_FETCH_B64, src)
+            head, b64 = data_url.split(",", 1)
+            ext = "jpg" if "image/jpeg" in head else ("webp" if "image/webp" in head else "png")
+            path = os.path.join(out_dir, f"img_{time.strftime('%y%m%d-%H%M%S')}_{i}.{ext}")
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(b64))
+            saved.append(path)
+        except Exception:
+            pass
+    return srcs, saved
 
 
 async def _select_model_on(page, label: str) -> dict:
@@ -188,7 +281,9 @@ class AskBody(BaseModel):
     prompt: str
     title: Optional[str] = None
     model: Optional[str] = None        # 예: "High", "Pro", "Instant" (피커 label 부분일치)
-    wait_timeout: float = 150.0
+    files: Optional[list[str]] = None  # 첨부할 로컬 파일 경로 목록
+    tool: Optional[str] = None         # "create_image" | "web_search" | "deep_research"
+    wait_timeout: float = 150.0        # deep_research 는 1800 이상 권장
 
 
 class AskInBody(BaseModel):
@@ -218,7 +313,7 @@ async def status():
 
 @app.post("/ask")
 async def ask(body: AskBody):
-    """새 채팅 질문 (탭 풀 병렬). model 지정 시 그 탭의 피커에서 선택 후 전송."""
+    """새 채팅 질문 (탭 풀 병렬). model/tool/files 지정 시 그 탭에서 선택·첨부 후 전송."""
     page = await pool.acquire()
     try:
         await _new_chat(page)
@@ -226,10 +321,25 @@ async def ask(body: AskBody):
             sel = await _select_model_on(page, body.model)
             if not sel.get("ok"):
                 raise HTTPException(400, f"모델 선택 실패: {sel}")
-        dom_text, url = await _send_and_wait(page, body.prompt, body.wait_timeout, before=0, baseline="")
+        if body.tool:
+            t = await _select_tool_on(page, body.tool)
+            if not t.get("ok"):
+                raise HTTPException(400, f"도구 선택 실패: {t}")
+        if body.files:
+            a = await _attach_files_on(page, body.files)
+            if not a.get("ok"):
+                raise HTTPException(400, f"파일 첨부 실패: {a}")
+        dom_text, url = await _send_and_wait(page, body.prompt, body.wait_timeout, before=0, baseline="",
+                                             send_ready_timeout=(120.0 if body.files else 0.0))
         m = re.search(r"/c/([0-9a-f-]+)", url)
         cid = m.group(1) if m else None
-        return await _conv_result(page, body.prompt, cid, dom_text, body.title)
+        res = await _conv_result(page, body.prompt, cid, dom_text, body.title)
+        img_urls, img_files = await _save_images_on(page)
+        if img_urls:
+            res["images"] = img_urls
+            res["image_files"] = img_files
+            res["ok"] = True
+        return res
     finally:
         pool.release(page)
 

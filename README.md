@@ -89,7 +89,7 @@ python http_server.py                   # http://127.0.0.1:8765  (Swagger 문서
 | 메서드/경로 | 설명 |
 |---|---|
 | `GET /status` | 로그인 세션 + 탭 풀 상태 |
-| `POST /ask` | **새 채팅 질문 (병렬)**. body: `{"prompt", "title"?, "model"?, "wait_timeout"?}` |
+| `POST /ask` | **새 채팅 질문 (병렬)**. body: `{"prompt", "title"?, "model"?, "files"?, "tool"?, "wait_timeout"?}` |
 | `POST /ask_in` | 기존 대화 이어쓰기. body: `{"conversation_id", "prompt"}` — 같은 대화는 자동 직렬화 |
 | `GET /conversations?limit=50` | 대화 목록 (최신순) |
 | `GET /conversation/{id}` | 대화 전체 메시지 (내부 마커 정리됨) |
@@ -114,10 +114,29 @@ import requests
 r = requests.post("http://127.0.0.1:8765/ask",
                   json={"prompt": "안녕?", "model": "Instant"}, timeout=300).json()
 print(r["answer"], r["conversation_id"])
+
+# 파일 첨부
+r = requests.post("http://127.0.0.1:8765/ask", timeout=400,
+                  json={"prompt": "첨부 문서를 요약해줘", "files": ["C:\\docs\\report.pdf"]}).json()
+
+# 이미지 생성 (결과는 downloads/ 폴더에 저장됨)
+r = requests.post("http://127.0.0.1:8765/ask", timeout=400,
+                  json={"prompt": "노을 지는 바다 그림", "tool": "create_image", "wait_timeout": 300}).json()
+print(r["image_files"])
+
+# 웹 검색 / 딥 리서치
+r = requests.post("http://127.0.0.1:8765/ask", timeout=400,
+                  json={"prompt": "오늘 코스피 지수는?", "tool": "web_search"}).json()
+r = requests.post("http://127.0.0.1:8765/ask", timeout=2000,
+                  json={"prompt": "전고체 배터리 상용화 동향 리포트", "tool": "deep_research",
+                        "wait_timeout": 1800}).json()
 ```
 
 - `model` 은 `GET /models` 의 label 부분일치: 예) `"Instant"`, `"Medium"`, `"High"`, `"Extra High"`, `"Pro"`
   (플랜/시기에 따라 다름 — 항상 `/models` 로 확인). 생략하면 계정 기본값.
+- `files`: 로컬 파일 경로 목록 — 종류 제한 없음(multiple). 업로드 완료를 기다렸다가 전송한다.
+- `tool`: `create_image` | `web_search` | `deep_research`. 이미지 답변은 `images`(URL) + `image_files`(로컬 저장 경로) 로 반환.
+  **deep research 는 수 분~수십 분** 걸리고 계정 할당량을 소모한다 — `wait_timeout` 을 1800 이상으로.
 - `title` 생략 시 config 의 `session.title_prefix` 규칙으로 자동 제목 (`[AUTO] 260710-1430 질문머리…`).
 - 응답 대기: 보통 수십 초, **Pro 는 몇 분**까지 걸릴 수 있다 (`wait_timeout` 기본 150초).
 

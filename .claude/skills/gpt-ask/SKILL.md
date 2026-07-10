@@ -28,6 +28,10 @@ description: ChatGPT 웹으로 질문 전송 — 먼저 AskUserQuestion 으로 �
    - 새 채팅: `POST /ask` body `{"prompt": "...", "model": "<선택 label>", "title": "<제목|생략>"}`
      — model 은 그 탭의 피커에서 자동 선택된다. 응답 대기는 수십 초~(Pro 는 몇 분) 걸릴 수 있다.
    - 기존 대화 이어쓰기: `POST /ask_in` body `{"conversation_id": "...", "prompt": "..."}` (모델은 그 대화를 따름).
+   - **파일 첨부**: 사용자가 파일을 언급하면 body 에 `"files": ["<로컬 경로>", ...]` 추가.
+   - **도구**: 요청 성격에 맞으면 `"tool"` 추가 — 이미지 생성 → `create_image` (결과는 `image_files` 로 로컬 저장),
+     실시간/최신 정보 → `web_search`, 심층 조사 리포트 → `deep_research` (`wait_timeout: 1800` 이상 + 사용자에게
+     수십 분 걸리고 할당량을 소모함을 먼저 알릴 것).
 
 5. **보고**: 답변, `conversation_id`, 적용된 제목(`title`/`renamed`)을 사용자에게 전달한다.
    쓰기 동작임을 유의 — 계정에 대화가 생성된다.
